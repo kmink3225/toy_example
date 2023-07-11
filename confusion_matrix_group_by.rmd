@@ -1,0 +1,123 @@
+
+## Load Packages
+
+```{r 1, message=FALSE, warning=FALSE}
+
+#for (ipkg in c("janitor","tidyverse","tidymodels", "data.table","arrow", "gt","caret","epitools",'DescTools','purrr')) {
+for (ipkg in c("janitor","tidyverse", "caret","epitools","DescTools")) {
+  if (!require(ipkg, character.only = TRUE)) {
+    install.packages(ipkg)
+    library(ipkg, character.only = TRUE)
+  }
+}
+
+
+```
+
+## Data Load 
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(00)
+
+temp <- lapply(c(paste0('scenario0', 0:9), 'scenario99'), function(x) {
+  data.frame(
+    template = sample(as.character(LETTERS[1:8]), 1200, replace = TRUE),
+    scenario = rep(x, 1200),
+    adjusted_label = ifelse(runif(1200) <= 0.8, 'positive', 'negative'),
+    dsp_label = ifelse(runif(1200) <= 0.8, 'positive', 'negative'))%>%
+    mutate(concentration = case_when(
+        runif(1200) <= 0.16 ~ 'gray',
+        runif(1200) <= 0.16 ~ 'mild positive',
+        runif(1200) <= 0.16 ~ 'positive',
+        runif(1200) <= 0.16 ~ 'strong positive',
+        runif(1200) <= 0.16 ~ 'extreme positive',
+        TRUE ~ 'negative'
+      )
+  )
+})
+
+data1<-do.call('rbind',temp)
+names(data1)
+unique(data1$concentration)
+
+data2<-data1%>%
+    mutate(template=factor(template,levels=LETTERS[1:8]),
+           scenario=factor(scenario,levels=c(paste0('scenario0',0:9),'scenario99')),
+           adjusted_label=factor(adjusted_label,levels=c('negative','positive')),
+           dsp_label=factor(dsp_label,levels=c('negative','positive')),
+           concentration=factor(concentration,levels=c( "negative","extreme positive","mild positive","strong positive","positive","gray")))
+
+factor_data <- data2 %>% select_if(is.factor)
+numeric_data <- data2 %>% select_if(is.numeric)
+list_data <- data2 %>% select_if(is.list)
+string_data <- data2 %>% select_if(is.character)
+factor_variables <-names(factor_data)
+numeric_variables <-names(numeric_data)
+list_variables <-names(list_data)
+string_variables <-names(string_data)
+
+global_variable_list <- lapply(factor_data, function(x) levels(x))%>%
+  setNames(., paste0(names(factor_data), "s"))
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+i_df=data2
+get_confusion_summary <- function(i_df){
+  temp <-caret::confusionMatrix(i_df$dsp_label,i_df$adjusted_label,positive='positive')
+  result<-data.frame(value=c(
+  'true_negative'=temp[['table']][1,1],
+  'false_positive'=temp[['table']][2,1],
+  'true_positive'=temp[['table']][2,2],
+  'false_negative'=temp[['table']][1,2],
+  temp[['overall']]%>%clean_names(),
+  temp[['byClass']]%>%clean_names()))%>%
+  rownames_to_column(var = "metric")
+  return(result)
+}
+
+i_grouping_variables=c("template","scenario","concentration")
+
+
+generate_confusion_summary_list <- function(i_grouping_variables) {
+  grouping_values <- lapply(i_grouping_variables, function(variable) global_variable_list[[paste0(variable,'s')]])
+  confusion_summary_list <- list()
+    
+  expand_grid_data <- expand.grid(grouping_values)
+  names(expand_grid_data) <- i_grouping_variables
+  
+  group_by_expr <- paste0(
+    'group_by(', paste(i_grouping_variables, collapse=', '),')'
+  )
+  arrange_expr <- paste0(
+    "arrange(",
+    paste0( i_grouping_variables, collapse = ", "),")")
+
+  expand_grid_data<-eval(parse(text=paste('expand_grid_data',group_by_expr,arrange_expr,sep='%>%')))%>%
+  ungroup%>%
+  mutate_all(as.character)
+  
+  confusion_summary_list <- list()
+
+  # take a long time to compute
+  for (i in 1:nrow(expand_grid_data)) {
+    temp <- paste(expand_grid_data[i,],collapse=',')
+    
+    filter_expr <- paste0(
+      map2_chr(i_grouping_variables, expand_grid_data[i, ], ~ paste0(.x, " == '", .y, "'")),
+      collapse = ", "
+    )
+    eval(parse(text = paste0(
+      "confusion_summary_list[[temp]] <- data2 %>%",
+      "filter(", filter_expr, ") %>%",
+      "dplyr::select(dsp_label, adjusted_label) %>%",
+      "get_confusion_summary(.)"
+    )))
+  }
+return(confusion_summary_list)
+}
+
+generate_confusion_summary_list(c("template","scenario","concentration"))%>%
+    head(6)
+
+```
